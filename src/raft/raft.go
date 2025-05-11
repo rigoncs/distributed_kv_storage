@@ -18,14 +18,17 @@ package raft
 //
 
 import (
-	//	"bytes"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"course/labgob"
 	"course/labrpc"
+)
+
+const (
+	electionTimeoutMin time.Duration = 250 * time.Millisecond
+	electionTimeoutMax time.Duration = 400 * time.Millisecond
 )
 
 type Role string
@@ -71,6 +74,9 @@ type Raft struct {
 	role        Role
 	currentTerm int
 	votedFor    int
+
+	electionStart   time.Time
+	electionTimeout time.Duration // random
 }
 
 func (rf *Raft) becomeFollowerLocked(term int) {
@@ -86,7 +92,7 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 	rf.currentTerm = term
 }
 
-func (rf *Raft) becomeCandidateLocked(term int) {
+func (rf *Raft) becomeCandidateLocked() {
 	if rf.role == Leader {
 		LOG(rf.me, rf.currentTerm, DError, "Leader can't become Candidate")
 		return
@@ -98,7 +104,7 @@ func (rf *Raft) becomeCandidateLocked(term int) {
 	rf.votedFor = rf.me
 }
 
-func (rf *Raft) becomeLeaderLocked(term int) {
+func (rf *Raft) becomeLeaderLocked() {
 	if rf.role != Candidate {
 		LOG(rf.me, rf.currentTerm, DError, "Only Candidate can become Leader")
 		return
@@ -165,55 +171,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (PartA, PartB).
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (PartA).
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (PartA, PartB).
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -255,17 +212,8 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here (PartA)
-		// Check if a leader election should be started.
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-	}
+func (rf *Raft) contextLostLocked(role Role, term int) bool {
+	return !(rf.role == role && rf.currentTerm == term)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -290,7 +238,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.electionTicker()
 
 	return rf
 }
