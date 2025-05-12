@@ -77,6 +77,14 @@ type Raft struct {
 	currentTerm int
 	votedFor    int
 
+	// log in the Peer's local
+	log []LogEntry
+
+	// only used in Leader
+	// every peer's view
+	nextIndex  []int
+	matchIndex []int
+
 	electionStart   time.Time
 	electionTimeout time.Duration // random
 }
@@ -114,6 +122,10 @@ func (rf *Raft) becomeLeaderLocked() {
 
 	LOG(rf.me, rf.currentTerm, DLeader, "Become Leader in T%d", rf.currentTerm)
 	rf.role = Leader
+	for peer := 0; peer < len(rf.peers); peer++ {
+		rf.nextIndex[peer] = len(rf.log)
+		rf.matchIndex[peer] = 0
+	}
 }
 
 // return currentTerm and whether this server
@@ -234,6 +246,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (PartA, PartB, PartC).
+	rf.role = Follower
+	rf.currentTerm = 1
+	rf.votedFor = -1
+
+	// a dummy entry to avoid lots of corner checks
+	rf.log = append(rf.log, LogEntry{})
+
+	// initialize the leader's view slice
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
