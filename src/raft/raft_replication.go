@@ -1,6 +1,9 @@
 package raft
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 type LogEntry struct {
 	Term         int         // the log entry's term
@@ -59,12 +62,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DLog2, "Follower accept logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
 
+	// handle LeaderCommit
+	if args.LeaderCommit > rf.commitIndex {
+		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, args.LeaderCommit)
+		rf.commitIndex = args.LeaderCommit
+		rf.applyCond.Signal()
+	}
+
 	rf.resetElectionTimerLocked()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+func (rf *Raft) getMajorityIndexLocked() int {
+	tmpIndexes := make([]int, len(rf.peers))
+	copy(tmpIndexes, rf.matchIndex)
+	sort.Ints(sort.IntSlice(tmpIndexes))
+	majorityIdx := (len(rf.peers) - 1) / 2
+	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexes, majorityIdx, tmpIndexes[majorityIdx])
+	return tmpIndexes[majorityIdx]
 }
 
 // only valid in the given 'term'
@@ -109,6 +128,14 @@ func (rf *Raft) startReplication(term int) bool {
 		// update match/next index if log appended successfully
 		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries) // important
 		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+
+		// update the commitIndex
+		majorityMatched := rf.getMajorityIndexLocked()
+		if majorityMatched > rf.commitIndex && rf.log[majorityMatched].Term == rf.currentTerm {
+			LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
+			rf.commitIndex = majorityMatched
+			rf.applyCond.Signal()
+		}
 	}
 
 	rf.mu.Lock()
