@@ -40,7 +40,7 @@ type RequestVoteArgs struct {
 }
 
 func (args *RequestVoteArgs) String() string {
-	return fmt.Sprintf("Candidate-%d, T%d", args.CandidateId, args.Term)
+	return fmt.Sprintf("Candidate-%d, T%d, Last: [%d]T%d", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
 }
 
 // example RequestVote RPC reply structure.
