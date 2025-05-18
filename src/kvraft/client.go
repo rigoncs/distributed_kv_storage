@@ -10,6 +10,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct
 	leaderId int // 记录 Leader 节点的 id, 避免下一次请求的时候去轮询查找 Leader
+	// clientID + seqId 确定一个唯一的命令
 	clientId int64
 	seqId    int64
 }
@@ -47,7 +48,7 @@ func (ck *Clerk) Get(key string) string {
 
 	for {
 		var reply GetReply
-		ok := ck.servers[ck.leaderId].Call("Clerk.Get", args, &reply)
+		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			// 请求失败, 选择另一个节点重试
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
@@ -78,7 +79,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	for {
 		var reply PutAppendReply
-		ok := ck.servers[ck.leaderId].Call("Clerk.PutAppend", args, &reply)
+		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			// 请求失败, 选择另一个节点重试
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
