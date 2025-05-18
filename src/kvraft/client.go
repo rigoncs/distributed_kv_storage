@@ -10,6 +10,8 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct
 	leaderId int // 记录 Leader 节点的 id, 避免下一次请求的时候去轮询查找 Leader
+	clientId int64
+	seqId    int64
 }
 
 func nrand() int64 {
@@ -24,6 +26,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// You'll have to add code here
 	ck.leaderId = 0
+	ck.clientId = nrand()
+	ck.seqId = 0
 	return ck
 }
 
@@ -65,9 +69,11 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function
 	args := PutAppendArgs{
-		Key:   key,
-		Value: value,
-		Op:    op,
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		ClientId: ck.clientId,
+		SeqId:    ck.seqId,
 	}
 
 	for {
@@ -79,6 +85,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			continue
 		}
 		// 调用成功, 返回
+		ck.seqId++
 		return
 	}
 }

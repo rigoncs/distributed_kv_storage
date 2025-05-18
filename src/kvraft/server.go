@@ -19,9 +19,10 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	lastApplied  int
-	stateMachine *MemoryKVStateMachine
-	notifyChans  map[int]chan *OpReply
+	lastApplied    int
+	stateMachine   *MemoryKVStateMachine
+	notifyChans    map[int]chan *OpReply
+	duplicateTable map[int64]LastOperationInfo
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -55,8 +56,24 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}()
 }
 
+func (kv *KVServer) requestDuplicated(clientId, seqId int64) bool {
+	info, ok := kv.duplicateTable[clientId]
+	return ok && seqId <= info.SeqId
+}
+
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	// 判断请求是否重复
+	kv.mu.Lock()
+	if kv.requestDuplicated(args.ClientId, args.SeqId) {
+		// 如果是重复请求，直接返回结果
+		opReply := kv.duplicateTable[args.ClientId].Reply
+		reply.Err = opReply.Err
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
 	// 调用 raft，将请求存储到 raft 日志中并进行同步
 	index, _, isLeader := kv.rf.Start(Op{
 		Key:      args.Key,
@@ -142,6 +159,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.lastApplied = 0
 	kv.stateMachine = NewMemoryKVStateMachine()
 	kv.notifyChans = make(map[int]chan *OpReply)
+	kv.duplicateTable = make(map[int64]LastOperationInfo)
 
 	go kv.applyTask()
 	return kv
@@ -162,8 +180,19 @@ func (kv *KVServer) applyTask() {
 
 				// 取出用户的操作信息
 				op := message.Command.(Op)
-				// 将操作应用状态机中
-				opReply := kv.applyToStateMachine(op)
+				var opReply *OpReply
+				if op.OpType != OpGet && kv.requestDuplicated(op.ClientId, op.SeqId) {
+					opReply = kv.duplicateTable[op.ClientId].Reply
+				} else {
+					// 将操作应用状态机中
+					opReply = kv.applyToStateMachine(op)
+					if op.OpType != OpGet {
+						kv.duplicateTable[op.ClientId] = LastOperationInfo{
+							SeqId: op.SeqId,
+							Reply: opReply,
+						}
+					}
+				}
 
 				// 将结果发送回去
 				if _, isLeader := kv.rf.GetState(); isLeader {
