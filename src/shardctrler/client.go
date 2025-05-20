@@ -32,7 +32,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.leaderId = 0
 	ck.clientId = nrand()
 	ck.seqId = 0
-	return nil
+	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
