@@ -77,7 +77,8 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *ShardKV) matchGroup(key string) bool {
 	shard := key2shard(key)
-	return kv.currentConfig.Shards[shard] == kv.gid
+	shardStatus := kv.shards[shard].Status
+	return kv.currentConfig.Shards[shard] == kv.gid && (shardStatus == Normal || shardStatus == GC)
 }
 
 func (kv *ShardKV) requestDuplicated(clientId, seqId int64) bool {
@@ -191,7 +192,13 @@ func (kv *ShardKV) killed() bool {
 // for any long-running work.
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int,
 	ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
+	// call labgob.Register on structures you want
+	// Go's RPC library to marshall/unmarshall
 	labgob.Register(Op{})
+	labgob.Register(RaftCommand{})
+	labgob.Register(shardctrler.Config{})
+	labgob.Register(ShardOperationArgs{})
+	labgob.Register(ShardOperationReply{})
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -220,6 +227,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.restoreFromSnapshot(persister.ReadSnapshot())
 
 	go kv.applyTask()
+	go kv.fetchConfigTask()
+	go kv.shardMigrationTask()
+	go kv.shardGCTask()
 	return kv
 }
 func (kv *ShardKV) applyToStateMachine(op Op, shardId int) *OpReply {
@@ -252,11 +262,18 @@ func (kv *ShardKV) makeSnapshot(index int) {
 	enc := labgob.NewEncoder(buf)
 	_ = enc.Encode(kv.shards)
 	_ = enc.Encode(kv.duplicateTable)
+	_ = enc.Encode(kv.currentConfig)
+	_ = enc.Encode(kv.prevConfig)
 	kv.rf.Snapshot(index, buf.Bytes())
 }
 
 func (kv *ShardKV) restoreFromSnapshot(snapshot []byte) {
 	if len(snapshot) == 0 {
+		for i := 0; i < shardctrler.NShards; i++ {
+			if _, ok := kv.shards[i]; !ok {
+				kv.shards[i] = NewMemoryKVStateMachine()
+			}
+		}
 		return
 	}
 
@@ -264,10 +281,17 @@ func (kv *ShardKV) restoreFromSnapshot(snapshot []byte) {
 	dec := labgob.NewDecoder(buf)
 	var stateMachine map[int]*MemoryKVStateMachine
 	var dupTable map[int64]LastOperationInfo
-	if dec.Decode(&stateMachine) != nil || dec.Decode(&dupTable) != nil {
+	var currentConfig shardctrler.Config
+	var prevConfig shardctrler.Config
+	if dec.Decode(&stateMachine) != nil ||
+		dec.Decode(&dupTable) != nil ||
+		dec.Decode(&currentConfig) != nil ||
+		dec.Decode(&prevConfig) != nil {
 		panic("failed to restore from snapshot")
 	}
 
 	kv.shards = stateMachine
 	kv.duplicateTable = dupTable
+	kv.currentConfig = currentConfig
+	kv.prevConfig = prevConfig
 }
